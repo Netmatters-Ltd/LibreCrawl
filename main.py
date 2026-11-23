@@ -1188,6 +1188,59 @@ def get_crawl(crawl_id):
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/crawls/<int:crawl_id>/meta')
+@login_required
+def get_crawl_meta(crawl_id):
+    """A saved crawl's metadata alone, for clients that page its rows"""
+    from src.crawl_db import get_crawl_by_id
+
+    crawl = get_crawl_by_id(crawl_id)
+    if not crawl:
+        return jsonify({'success': False, 'error': 'Crawl not found'}), 404
+
+    user_id = session.get('user_id')
+    if user_id and crawl.get('user_id') != user_id:
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+    return jsonify({'success': True, 'crawl': crawl})
+
+@app.route('/api/crawls/<int:crawl_id>/rows/<kind>')
+@login_required
+def get_crawl_rows(crawl_id, kind):
+    """One page of a saved crawl's urls, links or issues.
+
+    /api/crawls/<id> returns the whole crawl in one response, which is too
+    large for big sites. Page with after_id, the last row id of the previous
+    page; a page shorter than limit is the last one.
+    """
+    from src.crawl_db import get_crawl_by_id, load_crawl_rows_after, PAGED_TABLES
+
+    if kind not in PAGED_TABLES:
+        return jsonify({'success': False, 'error': f'Unknown row kind: {kind}'}), 404
+
+    try:
+        after_id = max(0, int(request.args.get('after_id', 0)))
+        limit = min(5000, max(1, int(request.args.get('limit', 1000))))
+    except ValueError:
+        return jsonify({'success': False, 'error': 'after_id and limit must be integers'}), 400
+
+    crawl = get_crawl_by_id(crawl_id)
+    if not crawl:
+        return jsonify({'success': False, 'error': 'Crawl not found'}), 404
+
+    user_id = session.get('user_id')
+    if user_id and crawl.get('user_id') != user_id:
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+    try:
+        rows = load_crawl_rows_after(crawl_id, kind, after_id, limit)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+    return jsonify({'success': True, 'rows': rows})
+
 @app.route('/api/crawls/<int:crawl_id>/load', methods=['POST'])
 @login_required
 def load_crawl_into_session(crawl_id):

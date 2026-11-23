@@ -510,6 +510,45 @@ def get_user_crawls(user_id, limit=50, offset=0, status_filter=None):
         print(f"Error fetching user crawls: {e}")
         return []
 
+URL_JSON_FIELDS = ['h2', 'h3', 'meta_tags', 'og_tags', 'twitter_tags',
+                   'json_ld', 'analytics', 'images', 'hreflang',
+                   'schema_org', 'redirects', 'linked_from']
+
+def _parse_url_row(row):
+    """A crawled_urls row as a dict with its JSON fields decoded"""
+    url_data = dict(row)
+    for field in URL_JSON_FIELDS:
+        if url_data.get(field):
+            try:
+                url_data[field] = json.loads(url_data[field])
+            except:
+                url_data[field] = []
+    return url_data
+
+PAGED_TABLES = {
+    'urls': 'crawled_urls',
+    'links': 'crawl_links',
+    'issues': 'crawl_issues',
+}
+
+def load_crawl_rows_after(crawl_id, kind, after_id=0, limit=1000):
+    """One page of a crawl's urls, links or issues, in id order after after_id.
+
+    Unlike the load_* helpers this raises on failure, so a caller paging
+    through a crawl cannot mistake an error for the end of the data.
+    """
+    table = PAGED_TABLES[kind]
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f'SELECT * FROM {table} WHERE crawl_id = ? AND id > ? ORDER BY id LIMIT ?',
+            (crawl_id, after_id, limit)
+        ).fetchall()
+
+    if kind == 'urls':
+        return [_parse_url_row(row) for row in rows]
+    return [dict(row) for row in rows]
+
 def load_crawled_urls(crawl_id, limit=None, offset=0):
     """Load all crawled URLs for a crawl"""
     try:
@@ -525,22 +564,7 @@ def load_crawled_urls(crawl_id, limit=None, offset=0):
 
             cursor.execute(query, params)
 
-            urls = []
-            for row in cursor.fetchall():
-                url_data = dict(row)
-                # Parse JSON fields
-                for field in ['h2', 'h3', 'meta_tags', 'og_tags', 'twitter_tags',
-                             'json_ld', 'analytics', 'images', 'hreflang',
-                             'schema_org', 'redirects', 'linked_from']:
-                    if url_data.get(field):
-                        try:
-                            url_data[field] = json.loads(url_data[field])
-                        except:
-                            url_data[field] = []
-
-                urls.append(url_data)
-
-            return urls
+            return [_parse_url_row(row) for row in cursor.fetchall()]
 
     except Exception as e:
         print(f"Error loading crawled URLs: {e}")
