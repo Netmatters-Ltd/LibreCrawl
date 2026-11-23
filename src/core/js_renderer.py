@@ -9,9 +9,20 @@ from urllib.parse import urlparse
 class JavaScriptRenderer:
     """Handles JavaScript rendering for dynamic content using Playwright"""
 
+    # Playwright's wording when a page's renderer process or the whole browser
+    # has died. A crashed page fails every later navigation, so it is replaced.
+    CRASH_MARKERS = (
+        'Page crashed',
+        'Target crashed',
+        'Target closed',
+        'has been closed',
+        'frame was detached',
+    )
+
     def __init__(self, config):
         self.config = config
         self.playwright = None
+        self._relaunching = False
         self.browser = None
         self.page_pool = []
         self.pool_lock = threading.Lock()
@@ -22,31 +33,12 @@ class JavaScriptRenderer:
             print("Starting Playwright browser...")
             self.playwright = await async_playwright().start()
 
-            # Choose browser based on configuration
-            browser_type = self.config.get('js_browser', 'chromium').lower()
-            headless = self.config.get('js_headless', True)
-
-            if browser_type == 'firefox':
-                self.browser = await self.playwright.firefox.launch(headless=headless)
-            elif browser_type == 'webkit':
-                self.browser = await self.playwright.webkit.launch(headless=headless)
-            else:  # Default to chromium
-                args = ['--no-sandbox', '--disable-dev-shm-usage'] if headless else []
-                self.browser = await self.playwright.chromium.launch(headless=headless, args=args)
+            await self._launch_browser()
 
             # Create page pool
             max_pages = self.config.get('js_max_concurrent_pages', 3)
             for i in range(max_pages):
-                context = await self.browser.new_context(
-                    user_agent=self.config.get('js_user_agent', 'LibreCrawl/1.0 (Web Crawler with JavaScript)'),
-                    viewport={
-                        'width': self.config.get('js_viewport_width', 1920),
-                        'height': self.config.get('js_viewport_height', 1080)
-                    }
-                )
-                page = await context.new_page()
-                page.set_default_timeout(self.config.get('js_timeout', 30) * 1000)
-                self.page_pool.append(page)
+                self.page_pool.append(await self._new_page())
 
             print(f"JavaScript rendering initialized with {len(self.page_pool)} browser pages")
 
@@ -54,6 +46,69 @@ class JavaScriptRenderer:
             print(f"Failed to initialize JavaScript rendering: {e}")
             await self.cleanup()
             raise
+
+    async def _launch_browser(self):
+        """Launch the configured browser"""
+        browser_type = self.config.get('js_browser', 'chromium').lower()
+        headless = self.config.get('js_headless', True)
+
+        if browser_type == 'firefox':
+            self.browser = await self.playwright.firefox.launch(headless=headless)
+        elif browser_type == 'webkit':
+            self.browser = await self.playwright.webkit.launch(headless=headless)
+        else:  # Default to chromium
+            args = ['--no-sandbox', '--disable-dev-shm-usage'] if headless else []
+            self.browser = await self.playwright.chromium.launch(headless=headless, args=args)
+
+    async def _new_page(self):
+        """A page in its own context, so one crashed page cannot take others with it"""
+        context = await self.browser.new_context(
+            user_agent=self.config.get('js_user_agent', 'LibreCrawl/1.0 (Web Crawler with JavaScript)'),
+            viewport={
+                'width': self.config.get('js_viewport_width', 1920),
+                'height': self.config.get('js_viewport_height', 1080)
+            }
+        )
+        page = await context.new_page()
+        page.set_default_timeout(self.config.get('js_timeout', 30) * 1000)
+        return page
+
+    @classmethod
+    def is_crash(cls, error):
+        message = str(error)
+        return any(marker in message for marker in cls.CRASH_MARKERS)
+
+    async def _replace_page(self, page):
+        """Swap a crashed page for a fresh one, relaunching the browser if it died too.
+
+        Without this a single renderer crash fails every URL left in the crawl.
+        Returns None when no replacement could be made, which shrinks the pool.
+        """
+        try:
+            await page.context.close()
+        except Exception:
+            pass
+
+        try:
+            while self._relaunching:
+                await asyncio.sleep(0.5)
+
+            if not self.browser or not self.browser.is_connected():
+                self._relaunching = True
+                try:
+                    print("JavaScript browser died, relaunching it")
+                    try:
+                        await self.browser.close()
+                    except Exception:
+                        pass
+                    await self._launch_browser()
+                finally:
+                    self._relaunching = False
+
+            return await self._new_page()
+        except Exception as e:
+            print(f"Could not replace a crashed JavaScript page: {e}")
+            return None
 
     async def cleanup(self):
         """Clean up Playwright browser and resources"""
@@ -152,6 +207,8 @@ class JavaScriptRenderer:
             except PlaywrightTimeoutError:
                 return None, 0, "JavaScript rendering timeout", None, empty_timing
             except Exception as e:
+                if self.is_crash(e):
+                    page = await self._replace_page(page)
                 return None, 0, f"Navigation error: {str(e)}", None, empty_timing
 
         except Exception as e:
