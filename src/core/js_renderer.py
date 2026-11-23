@@ -19,8 +19,10 @@ class JavaScriptRenderer:
         'frame was detached',
     )
 
-    def __init__(self, config):
+    def __init__(self, config, http_credentials=None):
         self.config = config
+        # Playwright httpCredentials; its origin keeps them to the crawled site
+        self.http_credentials = http_credentials
         self.playwright = None
         self._relaunching = False
         self.browser = None
@@ -62,13 +64,17 @@ class JavaScriptRenderer:
 
     async def _new_page(self):
         """A page in its own context, so one crashed page cannot take others with it"""
-        context = await self.browser.new_context(
-            user_agent=self.config.get('js_user_agent', 'LibreCrawl/1.0 (Web Crawler with JavaScript)'),
-            viewport={
+        options = {
+            'user_agent': self.config.get('js_user_agent', 'LibreCrawl/1.0 (Web Crawler with JavaScript)'),
+            'viewport': {
                 'width': self.config.get('js_viewport_width', 1920),
                 'height': self.config.get('js_viewport_height', 1080)
-            }
-        )
+            },
+        }
+        if self.http_credentials:
+            options['http_credentials'] = self.http_credentials
+
+        context = await self.browser.new_context(**options)
         page = await context.new_page()
         page.set_default_timeout(self.config.get('js_timeout', 30) * 1000)
         return page

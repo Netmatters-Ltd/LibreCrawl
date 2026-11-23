@@ -16,6 +16,7 @@ from flask import Flask, render_template, request, jsonify, session, redirect, u
 from flask_compress import Compress
 from functools import wraps
 from src.crawler import WebCrawler
+from src.core.host_auth import parse_http_auth
 from src.settings_manager import SettingsManager
 from src.auth_db import init_db, create_user, authenticate_user, get_user_by_id, log_guest_crawl, get_guest_crawls_last_24h, verify_user, set_user_tier, create_verification_token, verify_token, get_user_by_email, get_or_create_zoho_user
 from src.email_service import send_verification_email, send_welcome_email
@@ -785,6 +786,11 @@ def start_crawl():
     if not url:
         return jsonify({'success': False, 'error': 'URL is required'})
 
+    try:
+        http_auth = parse_http_auth(data.get('httpAuth'))
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)})
+
     user_id = session.get('user_id')
     tier = session.get('tier', 'guest')
 
@@ -822,7 +828,7 @@ def start_crawl():
         crawler.config['demo_memory_limit_bytes'] = int(1.5 * 1024 * 1024 * 1024)  # 1.5GB
 
     # Pass user_id and session_id for database persistence
-    success, message = crawler.start_crawl(url, user_id=user_id, session_id=session_id)
+    success, message = crawler.start_crawl(url, user_id=user_id, session_id=session_id, http_auth=http_auth)
 
     # Store crawl_id in session
     if success and crawler.crawl_id:

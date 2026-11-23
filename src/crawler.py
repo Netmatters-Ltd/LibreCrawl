@@ -74,6 +74,7 @@ from src.core.rate_limiter import RateLimiter
 from src.core.seo_extractor import SEOExtractor
 from src.core.link_manager import LinkManager
 from src.core.js_renderer import JavaScriptRenderer
+from src.core.host_auth import HostBasicAuth
 from src.core.sitemap_parser import SitemapParser
 from src.core.issue_detector import IssueDetector
 from src.core.memory_monitor import MemoryMonitor
@@ -98,6 +99,10 @@ class WebCrawler:
         # Base URL tracking
         self.base_url = None
         self.base_domain = None
+
+        # (username, password) for a site behind HTTP Basic auth. Held in memory
+        # for this crawl only: never in config, so never in the saved snapshot.
+        self.http_auth = None
 
         # Component instances (initialized on demand)
         self.rate_limiter = None
@@ -300,8 +305,12 @@ class WebCrawler:
             ]
         }
 
-    def start_crawl(self, url, user_id=None, session_id=None):
-        """Start crawling from the given URL"""
+    def start_crawl(self, url, user_id=None, session_id=None, http_auth=None):
+        """Start crawling from the given URL
+
+        http_auth is an optional (username, password) sent to the start URL's
+        host only.
+        """
         if self.is_running:
             return False, "Crawl already in progress"
 
@@ -313,6 +322,9 @@ class WebCrawler:
             parsed = urlparse(url)
             self.base_url = f"{parsed.scheme}://{parsed.netloc}"
             self.base_domain = parsed.netloc
+
+            self.http_auth = http_auth
+            self.session.auth = HostBasicAuth(self.base_domain, *http_auth) if http_auth else None
 
             # Create database crawl record if session_id provided
             if session_id:
@@ -376,7 +388,14 @@ class WebCrawler:
 
         # Initialize JS renderer if needed
         if self.config.get('enable_javascript', False):
-            self.js_renderer = JavaScriptRenderer(self.config)
+            http_credentials = None
+            if self.http_auth:
+                http_credentials = {
+                    'username': self.http_auth[0],
+                    'password': self.http_auth[1],
+                    'origin': self.base_url,
+                }
+            self.js_renderer = JavaScriptRenderer(self.config, http_credentials=http_credentials)
 
     def _reset_state(self):
         """Reset crawler state"""
