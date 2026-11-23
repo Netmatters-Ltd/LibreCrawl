@@ -1,0 +1,7 @@
+# data/ is mounted as a volume at run time. Copying it into the image baked
+# the whole crawl database into a layer, and chown -R /app wrote a second
+# copy, which on a server with a large users.db filled the disk mid-build.
+data/
+.git/
+**/__pycache__/
+*.pyc
